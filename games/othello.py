@@ -1,0 +1,474 @@
+import datetime
+import pathlib
+import random
+
+import numpy
+import torch
+
+from .abstract_game import AbstractGame
+
+
+class MuZeroConfig:
+    def __init__(self):
+        # fmt: off
+        # More information is available here: https://github.com/werner-duvaud/muzero-general/wiki/Hyperparameter-Optimization
+
+        self.seed = 0  # Seed for numpy, torch and the game
+        self.max_num_gpus = None  # Fix the maximum number of GPUs to use. It's usually faster to use a single GPU (set it to 1) if it has enough memory. None will use every GPUs available
+
+
+
+        ### Game
+        self.observation_shape = (3, Othello.boardSize, Othello.boardSize)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        self.action_space = list(range(Othello.boardSpaces))  # Fixed list of all possible actions. You should only edit the length
+        self.players = list(range(Othello.numPlayers))  # List of players. You should only edit the length
+        self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
+
+        # Evaluate
+        self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
+        self.opponent = "expert"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+
+
+
+        ### Self-Play
+        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.selfplay_on_gpu = False
+        self.max_moves = Othello.boardSpaces  # Maximum number of moves if game is not finished before
+        print("What should num_simulations be?  (config)")
+        self.num_simulations = 25  # Number of future moves self-simulated
+        self.discount = 1  # Chronological discount of the reward
+        self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
+
+        # Root prior exploration noise
+        self.root_dirichlet_alpha = 0.1
+        self.root_exploration_fraction = 0.25
+
+        # UCB formula
+        self.pb_c_base = 19652
+        self.pb_c_init = 1.25
+
+
+
+        ### Network
+        print("What should network be?")
+        self.network = "resnet"  # "resnet" / "fullyconnected"
+        print("What show the support_size be?")
+        self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
+
+        # Residual Network
+        self.downsample = False  # Downsample observations before representation network, False / "CNN" (lighter) / "resnet" (See paper appendix Network Architecture)
+        self.blocks = 1  # Number of blocks in the ResNet
+        self.channels = 16  # Number of channels in the ResNet
+        self.reduced_channels_reward = 16  # Number of channels in reward head
+        self.reduced_channels_value = 16  # Number of channels in value head
+        self.reduced_channels_policy = 16  # Number of channels in policy head
+        self.resnet_fc_reward_layers = [8]  # Define the hidden layers in the reward head of the dynamic network
+        self.resnet_fc_value_layers = [8]  # Define the hidden layers in the value head of the prediction network
+        self.resnet_fc_policy_layers = [8]  # Define the hidden layers in the policy head of the prediction network
+
+        # Fully Connected Network
+        self.encoding_size = 32
+        self.fc_representation_layers = []  # Define the hidden layers in the representation network
+        self.fc_dynamics_layers = [16]  # Define the hidden layers in the dynamics network
+        self.fc_reward_layers = [16]  # Define the hidden layers in the reward network
+        self.fc_value_layers = []  # Define the hidden layers in the value network
+        self.fc_policy_layers = []  # Define the hidden layers in the policy network
+
+
+
+        ### Training
+        print("What should training parameters be?")
+        self.results_path = pathlib.Path(__file__).resolve().parents[1] / "results" / pathlib.Path(__file__).stem / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")  # Path to store the model weights and TensorBoard logs
+        self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
+        self.training_steps = 1000  # Total number of training steps (ie weights update according to a batch)
+        self.batch_size = 64  # Number of parts of games to train on at each training step
+        self.checkpoint_interval = 10  # Number of training steps before using the model for self-playing
+        self.value_loss_weight = 0.25  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
+        self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
+
+        self.optimizer = "Adam"  # "Adam" or "SGD". Paper uses SGD
+        self.weight_decay = 1e-4  # L2 weights regularization
+        self.momentum = 0.9  # Used only if optimizer is SGD
+
+        # Exponential learning rate schedule
+        self.lr_init = 0.003  # Initial learning rate
+        self.lr_decay_rate = 1  # Set it to 1 to use a constant learning rate
+        self.lr_decay_steps = 10000
+
+
+
+        ### Replay Buffer
+        print("What should replay buffer parameters be?")
+        self.replay_buffer_size = 25000  # Number of self-play games to keep in the replay buffer
+        self.num_unroll_steps = 60  # Number of game moves to keep for every batch element
+        self.td_steps = 60  # Number of steps in the future to take into account for calculating the target value
+        self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
+        self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
+
+        # Reanalyze (See paper appendix Reanalyse)
+        self.use_last_model_value = True  # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
+        self.reanalyse_on_gpu = False
+
+
+
+        ### Adjust the self play / training ratio to avoid over/underfitting
+        self.self_play_delay = 0  # Number of seconds to wait after each played game
+        self.training_delay = 0  # Number of seconds to wait after each training step
+        self.ratio = None  # Desired training steps per self played step ratio. Equivalent to a synchronous version, training can take much longer. Set it to None to disable it
+        # fmt: on
+
+    def visit_softmax_temperature_fn(self, trained_steps):
+        """
+        Parameter to alter the visit count distribution to ensure that the action selection becomes greedier as training progresses.
+        The smaller it is, the more likely the best action (ie with the highest visit count) is chosen.
+
+        Returns:
+            Positive float.
+        """
+        return 1
+
+
+class Game(AbstractGame):
+    """
+    Game wrapper.
+    """
+
+    def __init__(self, seed=None):
+        self.env = Othello()
+
+    def step(self, action):
+        """
+        Apply action to the game.
+
+        Args:
+            action : action of the action_space to take.
+
+        Returns:
+            The new observation, the reward and a boolean if the game has ended.
+        """
+        observation, reward, done = self.env.step(action)
+        return observation, reward * 100, done
+
+    def to_play(self):
+        """
+        Return the current player.
+
+        Returns:
+            The current player, it should be an element of the players list in the config.
+        """
+        return self.env.to_play()
+
+    def legal_actions(self):
+        """
+        Should return the legal actions at each turn, if it is not available, it can return
+        the whole action space. At each turn, the game have to be able to handle one of returned actions.
+
+        For complex game where calculating legal moves is too long, the idea is to define the legal actions
+        equal to the action space but to return a negative reward if the action is illegal.
+
+        Returns:
+            An array of integers, subset of the action space.
+        """
+        return self.env.legal_actions()
+
+    def reset(self):
+        """
+        Reset the game for a new game.
+
+        Returns:
+            Initial observation of the game.
+        """
+        return self.env.reset()
+
+    def render(self):
+        """
+        Display the game observation.
+        """
+        self.env.render()
+        input("Press enter to take a step ")
+
+    # ToDo: get from env.  Make for othello
+    def human_to_action(self):
+        """
+        For multiplayer games, ask the user for a legal action
+        and return the corresponding action number.
+
+        Returns:
+            An integer from the action space.
+        """
+        while True:
+            try:
+                print("This is still set up for TTT")
+                row = int(
+                    input(
+                        f"Enter the row (1, 2 or 3) to play for the player {self.to_play()}: "
+                    )
+                )
+                col = int(
+                    input(
+                        f"Enter the column (1, 2 or 3) to play for the player {self.to_play()}: "
+                    )
+                )
+                choice = (row - 1) * 3 + (col - 1)
+                if (
+                    choice in self.legal_actions()
+                    and 1 <= row
+                    and 1 <= col
+                    and row <= 3
+                    and col <= 3
+                ):
+                    break
+            except:
+                pass
+            print("Wrong input, try again")
+        return choice
+
+    # ToDo: what do we do here?
+    def expert_agent(self):
+        """
+        Hard coded agent that MuZero faces to assess his progress in multiplayer games.
+        It doesn't influence training
+
+        Returns:
+            Action as an integer to take in the current game state
+        """
+        return self.env.expert_action()
+
+    # ToDo: make for othello.  get from env.
+    def action_to_string(self, action_number):
+        """
+        Convert an action number to a string representing the action.
+
+        Args:
+            action_number: an integer from the action space.
+
+        Returns:
+            String representing the action.
+        """
+        row = action_number // self.env.boardSize + 1
+        col = action_number % self.env.boardSize + 1
+        return f"Play row {row}, column {col}"
+
+
+class Othello:
+    boardSize = 8
+    boardSpaces = boardSize ** 2
+    numPlayers = 2
+
+    player1 = 1
+    player2 = -1
+    empty = 0
+
+    passAction = -1     # Illegal spot on the board.
+
+    def __init__(self):
+        self.reset()
+
+    def to_play(self):
+        return 0 if self.player == 1 else 1
+
+    def reset(self):
+        self.board = numpy.zeros((self.boardSize, self.boardSize), dtype="int32")
+        halfBoardSize = int(self.boardSize / 2)
+
+        self.board[halfBoardSize-1, halfBoardSize-1] = self.player1
+        self.board[halfBoardSize-1, halfBoardSize] = self.player2
+        self.board[halfBoardSize, halfBoardSize-1] = self.player2
+        self.board[halfBoardSize, halfBoardSize] = self.player1
+
+        self.passCount = 0
+        self.player = self.player1
+
+        return self.get_observation()
+
+    def row(self, space:int)->int:
+        return space // self.boardSize
+
+    def col(self, space:int)->int:
+        return space % self.boardSize
+
+    def space(self, row:int, col:int)->int:
+        return int(row * self.boardSize + col)
+
+    def row_col(self, space:int):
+        return self.row(space), self.col(space)
+
+    def disc_count(self, player=None)->int:
+        player = self.player if not player else player
+        return (self.board==player).sum()
+
+    def find_flips(self, player:int, space:int)->list:
+        flips = []
+
+        # Check if the space is empty
+        if not self.board[self.row(space), self.col(space)] == self.empty:
+            return flips
+
+        # row, col offsets for the 8 possible directions to test for flips
+        testDirs = [
+            (-1,-1), (-1, 0), (-1, 1),
+            ( 0,-1),          ( 0, 1),
+            ( 1,-1), ( 1, 0), ( 1, 1)
+        ]
+
+        # loop through each direction
+        for dRow, dCol in testDirs:
+            # create a temporary list of potential flips
+            potential_flips = []
+
+            row, col = self.row_col(space)
+            while True:
+                row += dRow
+                col += dCol
+
+                # test for off the board
+                if row < 0 or row >= self.boardSize or \
+                   col < 0 or col >= self.boardSize:
+                    break
+
+                # test for empty space
+                if self.board[row, col] == self.empty:
+                    break
+
+                # test for a space of ours
+                if self.board[row, col] == self.player:
+                    flips.extend(potential_flips)
+                    break
+
+                # if we've reached here the space must be an opponent's disc
+                potential_flips.append(self.space(row, col))
+        return flips
+
+    #ToDo. Convert to Othello
+    def legal_actions(self):
+        print(f"Discs Player 1: {self.disc_count(self.player1)}")
+        print(f"Discs Player 2: {self.disc_count(self.player2)}")
+        legal = []
+        for i in range(self.boardSpaces):
+            if self.find_flips(self.player, i):
+                legal.append(i)
+        if not legal:
+            legal.append(self.passAction)
+
+        return legal
+
+    #ToDo. Convert to Othello
+    def step(self, action):
+        if action == self.passAction:
+            self.passCount += 1
+        else:
+            self.passCount = 0
+
+        reward = 0
+        done = self.passCount >= 2
+
+        if done:
+            obs = self.get_observation()
+
+        for i in self.find_flips(self.player, action):
+            self.board[self.row_col(i)] = self.player
+        self.board[self.row_col(action)] = self.player
+
+        self.player *= -1
+
+        return self.get_observation(), reward, done
+
+    #ToDo. Convert to Othello
+    def get_observation(self):
+        # Can this be more efficient?
+        board_player1 = numpy.where(self.board == self.player1, 1.0, 0.0)
+        board_player2 = numpy.where(self.board == self.player2, 1.0, 0.0)
+        board_to_play = numpy.full((self.boardSize, self.boardSize), self.player, dtype="int32")
+        return numpy.array([board_player1, board_player2, board_to_play])
+
+
+    #ToDo. Convert to Othello
+    def have_winner(self):
+        # Horizontal check
+        for i in range(4):
+            for j in range(6):
+                if (
+                        self.board[j][i] == self.player
+                        and self.board[j][i + 1] == self.player
+                        and self.board[j][i + 2] == self.player
+                        and self.board[j][i + 3] == self.player
+                ):
+                    return True
+
+        # Vertical check
+        for i in range(7):
+            for j in range(3):
+                if (
+                        self.board[j][i] == self.player
+                        and self.board[j + 1][i] == self.player
+                        and self.board[j + 2][i] == self.player
+                        and self.board[j + 3][i] == self.player
+                ):
+                    return True
+
+        # Positive diagonal check
+        for i in range(4):
+            for j in range(3):
+                if (
+                        self.board[j][i] == self.player
+                        and self.board[j + 1][i + 1] == self.player
+                        and self.board[j + 2][i + 2] == self.player
+                        and self.board[j + 3][i + 3] == self.player
+                ):
+                    return True
+
+        # Negative diagonal check
+        for i in range(4):
+            for j in range(3, 6):
+                if (
+                        self.board[j][i] == self.player
+                        and self.board[j - 1][i + 1] == self.player
+                        and self.board[j - 2][i + 2] == self.player
+                        and self.board[j - 3][i + 3] == self.player
+                ):
+                    return True
+
+        return False
+
+    #ToDo. Convert to Othello
+    def expert_action(self):
+        board = self.board
+        action = numpy.random.choice(self.legal_actions())
+        for k in range(3):
+            for l in range(4):
+                sub_board = board[k: k + 4, l: l + 4]
+                # Horizontal and vertical checks
+                for i in range(4):
+                    if abs(sum(sub_board[i, :])) == 3:
+                        ind = numpy.where(sub_board[i, :] == 0)[0][0]
+                        if numpy.count_nonzero(board[:, ind + l]) == i + k:
+                            action = ind + l
+                            if self.player * sum(sub_board[i, :]) > 0:
+                                return action
+
+                    if abs(sum(sub_board[:, i])) == 3:
+                        action = i + l
+                        if self.player * sum(sub_board[:, i]) > 0:
+                            return action
+                # Diagonal checks
+                diag = sub_board.diagonal()
+                anti_diag = numpy.fliplr(sub_board).diagonal()
+                if abs(sum(diag)) == 3:
+                    ind = numpy.where(diag == 0)[0][0]
+                    if numpy.count_nonzero(board[:, ind + l]) == ind + k:
+                        action = ind + l
+                        if self.player * sum(diag) > 0:
+                            return action
+
+                if abs(sum(anti_diag)) == 3:
+                    ind = numpy.where(anti_diag == 0)[0][0]
+                    if numpy.count_nonzero(board[:, 3 - ind + l]) == ind + k:
+                        action = 3 - ind + l
+                        if self.player * sum(anti_diag) > 0:
+                            return action
+
+        return action
+
+    #ToDo. Convert to Othello
+    def render(self):
+        print(self.board)
