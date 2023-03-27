@@ -7,7 +7,6 @@ import torch
 
 from .abstract_game import AbstractGame
 
-
 class MuZeroConfig:
     def __init__(self):
         # fmt: off
@@ -26,7 +25,7 @@ class MuZeroConfig:
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
-        self.opponent = "expert"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+        self.opponent = "self"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
 
 
 
@@ -186,7 +185,6 @@ class Game(AbstractGame):
         Display the game observation.
         """
         self.env.render()
-        input("Press enter to take a step ")
 
     # ToDo: get from env.  Make for othello
     def human_to_action(self):
@@ -197,6 +195,7 @@ class Game(AbstractGame):
         Returns:
             An integer from the action space.
         """
+        raise NotImplementedError("human_to_action: NYI")
         while True:
             try:
                 print("This is still set up for TTT")
@@ -233,9 +232,10 @@ class Game(AbstractGame):
         Returns:
             Action as an integer to take in the current game state
         """
+        raise NotImplementedError("expert_action: NYI")
+
         return self.env.expert_action()
 
-    # ToDo: make for othello.  get from env.
     def action_to_string(self, action_number):
         """
         Convert an action number to a string representing the action.
@@ -246,9 +246,7 @@ class Game(AbstractGame):
         Returns:
             String representing the action.
         """
-        row = action_number // self.env.boardSize + 1
-        col = action_number % self.env.boardSize + 1
-        return f"Play row {row}, column {col}"
+        return f"Play {action_number}"
 
 
 class Othello:
