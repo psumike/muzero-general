@@ -9,9 +9,10 @@ game = Othello()
 # game = Connect4()
 
 # random.seed(123)
-steps = 64
+max_steps = 64
 
-for i in range(steps):
+
+for i in range(max_steps):
     game.render()
     print(f"Step {i}: Player {game.to_play()} turn")
     obs = game.get_observation()

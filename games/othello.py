@@ -132,6 +132,7 @@ class Game(AbstractGame):
     """
     Game wrapper.
     """
+    reward_multiplier = 100
 
     def __init__(self, seed=None):
         self.env = Othello()
@@ -147,7 +148,7 @@ class Game(AbstractGame):
             The new observation, the reward and a boolean if the game has ended.
         """
         observation, reward, done = self.env.step(action)
-        return observation, reward * 100, done
+        return observation, reward * self.reward_multiplier, done
 
     def to_play(self):
         """
@@ -339,10 +340,7 @@ class Othello:
                 potential_flips.append(self.space(row, col))
         return flips
 
-    #ToDo. Convert to Othello
     def legal_actions(self):
-        print(f"Discs Player 1: {self.disc_count(self.player1)}")
-        print(f"Discs Player 2: {self.disc_count(self.player2)}")
         legal = []
         for i in range(self.boardSpaces):
             if self.find_flips(self.player, i):
@@ -352,28 +350,32 @@ class Othello:
 
         return legal
 
-    #ToDo. Convert to Othello
     def step(self, action):
         if action == self.passAction:
             self.passCount += 1
         else:
             self.passCount = 0
 
-        reward = 0
         done = self.passCount >= 2
 
+        reward = 0
         if done:
-            obs = self.get_observation()
+            disc_counts = [self.disc_count(self.player), self.disc_count(self.player * -1)]
+            if disc_counts[0] > disc_counts[1]:
+                reward = 1
+            elif disc_counts[1] > disc_counts[0]:
+                reward = -1
+        else:
+            # not done, play the space (action)
+            for i in self.find_flips(self.player, action):
+                self.board[self.row_col(i)] = self.player
+            self.board[self.row_col(action)] = self.player
 
-        for i in self.find_flips(self.player, action):
-            self.board[self.row_col(i)] = self.player
-        self.board[self.row_col(action)] = self.player
-
+        # switch players
         self.player *= -1
 
         return self.get_observation(), reward, done
 
-    #ToDo. Convert to Othello
     def get_observation(self):
         # Can this be more efficient?
         board_player1 = numpy.where(self.board == self.player1, 1.0, 0.0)
@@ -381,94 +383,8 @@ class Othello:
         board_to_play = numpy.full((self.boardSize, self.boardSize), self.player, dtype="int32")
         return numpy.array([board_player1, board_player2, board_to_play])
 
-
-    #ToDo. Convert to Othello
-    def have_winner(self):
-        # Horizontal check
-        for i in range(4):
-            for j in range(6):
-                if (
-                        self.board[j][i] == self.player
-                        and self.board[j][i + 1] == self.player
-                        and self.board[j][i + 2] == self.player
-                        and self.board[j][i + 3] == self.player
-                ):
-                    return True
-
-        # Vertical check
-        for i in range(7):
-            for j in range(3):
-                if (
-                        self.board[j][i] == self.player
-                        and self.board[j + 1][i] == self.player
-                        and self.board[j + 2][i] == self.player
-                        and self.board[j + 3][i] == self.player
-                ):
-                    return True
-
-        # Positive diagonal check
-        for i in range(4):
-            for j in range(3):
-                if (
-                        self.board[j][i] == self.player
-                        and self.board[j + 1][i + 1] == self.player
-                        and self.board[j + 2][i + 2] == self.player
-                        and self.board[j + 3][i + 3] == self.player
-                ):
-                    return True
-
-        # Negative diagonal check
-        for i in range(4):
-            for j in range(3, 6):
-                if (
-                        self.board[j][i] == self.player
-                        and self.board[j - 1][i + 1] == self.player
-                        and self.board[j - 2][i + 2] == self.player
-                        and self.board[j - 3][i + 3] == self.player
-                ):
-                    return True
-
-        return False
-
-    #ToDo. Convert to Othello
     def expert_action(self):
-        board = self.board
-        action = numpy.random.choice(self.legal_actions())
-        for k in range(3):
-            for l in range(4):
-                sub_board = board[k: k + 4, l: l + 4]
-                # Horizontal and vertical checks
-                for i in range(4):
-                    if abs(sum(sub_board[i, :])) == 3:
-                        ind = numpy.where(sub_board[i, :] == 0)[0][0]
-                        if numpy.count_nonzero(board[:, ind + l]) == i + k:
-                            action = ind + l
-                            if self.player * sum(sub_board[i, :]) > 0:
-                                return action
+        raise Exception("Othello.expert_action() is not implemented")
 
-                    if abs(sum(sub_board[:, i])) == 3:
-                        action = i + l
-                        if self.player * sum(sub_board[:, i]) > 0:
-                            return action
-                # Diagonal checks
-                diag = sub_board.diagonal()
-                anti_diag = numpy.fliplr(sub_board).diagonal()
-                if abs(sum(diag)) == 3:
-                    ind = numpy.where(diag == 0)[0][0]
-                    if numpy.count_nonzero(board[:, ind + l]) == ind + k:
-                        action = ind + l
-                        if self.player * sum(diag) > 0:
-                            return action
-
-                if abs(sum(anti_diag)) == 3:
-                    ind = numpy.where(anti_diag == 0)[0][0]
-                    if numpy.count_nonzero(board[:, 3 - ind + l]) == ind + k:
-                        action = 3 - ind + l
-                        if self.player * sum(anti_diag) > 0:
-                            return action
-
-        return action
-
-    #ToDo. Convert to Othello
     def render(self):
         print(self.board)
